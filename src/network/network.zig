@@ -79,7 +79,7 @@ pub const Server = struct {
                     std.log.debug("Reading packet of len: {}", .{packet_len});
                     var packet = try packets.readPacket(@constCast(&connection), arena.allocator());
                     packet.print(.debug);
-                    if (try connection.handlePacket(packet)) {
+                    if (try packets.handlePacket(@constCast(&connection), packet)) {
                         std.log.debug("Closing connection!", .{});
                         connection.deinit();
                         _ = self.connections.orderedRemove(i);

@@ -71,8 +71,8 @@ pub fn readPacket(connection: *net.Connection, allocator: std.mem.Allocator) !Pa
             } };
         },
         ConnectionState.STATUS => return readStatusPacket(connection, packet_id, allocator),
-        ConnectionState.LOGIN => return readLoginPacket(connection, packet_id),
-        ConnectionState.PLAY => return readPlayPacket(connection, packet_id),
+        ConnectionState.LOGIN => return readLoginPacket(connection, packet_id, allocator),
+        ConnectionState.PLAY => return readPlayPacket(connection, packet_id, allocator),
     }
 }
 
