@@ -2,7 +2,7 @@ const std = @import("std");
 const network = @import("network/network.zig");
 
 pub const std_options = struct {
-    pub const log_level = .info;
+    pub const log_level = .debug;
     pub const logFn = log;
 };
 

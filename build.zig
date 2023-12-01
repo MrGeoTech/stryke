@@ -11,7 +11,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    exe.addModule("network", b.dependency("network", .{}).module("network"));
+    exe.addModule("uuid", b.dependency("uuid", .{}).module("uuid6"));
 
     b.installArtifact(exe);
 

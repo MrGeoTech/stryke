@@ -1,8 +1,13 @@
 const std = @import("std");
 const os = std.os;
 const net = std.net;
+
 const builtin = @import("builtin");
+const uuid = @import("uuid");
+
 const packets = @import("packets.zig");
+const chat = @import("../chat/chat.zig");
+const identifier = @import("../data/indentifier.zig");
 
 const nativeToBig = std.mem.nativeToBig;
 const bigToNative = std.mem.bigToNative;
@@ -17,6 +22,8 @@ pub const Connection = struct {
     allocator: std.mem.Allocator,
     state: packets.ConnectionState,
     buffer: std.RingBuffer,
+    encrypted: bool = false,
+    compressed: bool = false,
 
     pub fn init(handle: os.socket_t, allocator: std.mem.Allocator, state: packets.ConnectionState) !Connection {
         return Connection{
@@ -108,7 +115,7 @@ pub const Connection = struct {
     pub fn flush(self: *Connection) !void {
         std.log.debug("Flushing {d} bytes...", .{self.buffer.len()});
         if (self.buffer.isEmpty()) return;
-
+        // Adding packet length to the beginning of buffer
         var temp_buffer = try std.RingBuffer.init(self.allocator, 5 + self.buffer.len());
         defer temp_buffer.deinit(self.allocator);
 
@@ -117,9 +124,11 @@ pub const Connection = struct {
         while (self.buffer.read()) |byte| {
             try temp_buffer.write(byte);
         }
+        // Converting from RingBuffer to a slice
+        var data = temp_buffer.data[temp_buffer.read_index..temp_buffer.write_index];
 
         std.log.debug("Flushed!", .{});
-        try self.writeAll(temp_buffer.data[temp_buffer.read_index..temp_buffer.write_index]);
+        try self.writeAll(data);
     }
 
     /// TODO in evented I/O mode, this implementation incorrectly uses the event loop's
@@ -262,17 +271,14 @@ pub const Connection = struct {
     }
 
     /// Returns are utf-8 encoded string. Enforces the max length
-    pub inline fn readString(self: *const Connection, comptime max_len: ?comptime_int, allocator: std.mem.Allocator) ![if (max_len) |len| len else 32767]u8 {
+    pub inline fn readString(self: *const Connection, comptime max_len: ?comptime_int, allocator: std.mem.Allocator) ![]const u8 {
         const max_len_val = if (max_len) |len| len else 32767;
         const size: usize = @intCast(try self.readVarInt(allocator));
 
         if (size > max_len_val * 4 + 3) return error.StringTooLong;
 
-        var bytes: [max_len_val]u8 = [_]u8{0} ** max_len_val;
-        const read_bytes = try self.readBytes(@intCast(size), allocator);
-        @memcpy(bytes[0..@min(size, max_len_val)], read_bytes[0..@min(size, max_len_val)]);
-
-        if (try std.unicode.utf8CountCodepoints(&bytes) > max_len_val) return error.StringTooLong;
+        var bytes = try self.readBytes(@intCast(size), allocator);
+        if (try std.unicode.utf8CountCodepoints(bytes) > max_len_val) return error.StringTooLong;
 
         return bytes;
     }
@@ -286,20 +292,25 @@ pub const Connection = struct {
         try self.writeBytes(value);
     }
 
-    pub inline fn readChat() void {
-        @panic("TODO: Chat not implemented yet");
+    pub inline fn readChat(self: *const Connection, allocator: std.mem.Allocator) !chat.Chat {
+        const json = try self.readString(262144, allocator);
+        defer allocator.free(json);
+        return chat.Chat.fromJsonLeaky(json, allocator);
     }
 
-    pub inline fn writeChat() void {
-        @panic("TODO: Chat not implemented yet");
+    pub inline fn writeChat(self: *const Connection, value: chat.Chat) !void {
+        const json = value.toJson(self.allocator);
+        defer self.allocator.free(json);
+        try self.writeString(json, 262144);
     }
 
-    pub inline fn readIdentifier() void {
-        @panic("TODO: Identifier not implemented yet");
+    pub inline fn readIdentifier(self: *const Connection, allocator: std.mem.Allocator) !identifier.Identifier {
+        const string = try self.readString(null, allocator);
+        return try identifier.Identifier.fromString(string);
     }
 
-    pub inline fn writeIdentifier() void {
-        @panic("TODO: Identifier not implemented yet");
+    pub inline fn writeIdentifier(self: *const Connection, value: identifier.Identifier) !void {
+        try self.writeString(value.toString(), null);
     }
 
     const SEGMENT_BITS: u8 = 0x7f;
@@ -413,12 +424,19 @@ pub const Connection = struct {
         @panic("TODO: Identifier not implemented yet");
     }
 
-    pub inline fn readUUID() void {
-        @panic("TODO: Identifier not implemented yet");
+    pub inline fn readUUID(self: *const Connection, allocator: std.mem.Allocator) !uuid {
+        const upper: u64 = @bitCast(try self.readLong(allocator));
+        const lower: u64 = @bitCast(try self.readLong(allocator));
+        const combined: u128 = @as(u128, upper) << 64 | lower;
+        return try uuid.fromInt(combined);
     }
 
-    pub inline fn writeUUID() void {
-        @panic("TODO: Identifier not implemented yet");
+    pub inline fn writeUUID(self: *const Connection, value: uuid) !void {
+        const as_int: u128 = try std.mem.bytesToValue(u128, value.bytes);
+        const upper: u64 = @truncate(as_int >> 64);
+        const lower: u64 = @truncate(as_int);
+        try self.writeLong(upper);
+        try self.writeLong(lower);
     }
 
     pub inline fn readArray(self: *const Connection, byte_size: usize, comptime T: type, allocator: std.mem.Allocator) !T {

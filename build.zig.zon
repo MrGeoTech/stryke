@@ -7,9 +7,9 @@
 		"build.zig.zon",
 	},
 	.dependencies = .{
-		.network = .{
-			.url = "https://github.com/MasterQ32/zig-network/archive/8999b17061ded0064acd2a81d8b08296f6476fba.tar.gz",
-			.hash = "1220d6df40a971a8974fffe2460258ee837a04016192b864c3b3f4b6cf34f33cb2cc",
+		.uuid = .{
+			.url = "https://github.com/jdknezek/uuid6-zig/archive/f849a3da0b8dc5dfc9a5740ba34f419d30909093.tar.gz",
+			.hash = "1220d16adaadf91606ff25564b176625afb15feb6c6ba2e54ab16a5ab2c17a5d3215",
 		},
 	}
 }

@@ -1,4 +1,7 @@
 const std = @import("std");
+const uuid = @import("uuid");
+const chat = @import("../chat/chat.zig");
+const identifier = @import("../data/indentifier.zig");
 const net = @import("./netlib.zig");
 
 pub const ConnectionState = enum(usize) {
@@ -18,10 +21,21 @@ pub const PacketType = enum {
 
 pub const Packet = union(PacketType) {
     HANDSHAKE: Handshake,
+    // STATUS
     STATUS_RESPONSE: StatusResponse,
     PING_RESPONSE_STATUS: PingResponse_Status,
     STATUS_REQUEST: StatusRequest,
     PING_REQUEST_STATUS: PingRequest_Status,
+    // LOGIN
+    DISCONNECT_LOGIN: Disconnect_Login,
+    ENCRYPTION_REQUEST: EncryptionRequest,
+    LOGIN_SUCCESS: LoginSuccess,
+    SET_COMPRESSION: SetCompression,
+    LOGIN_PLUGIN_REQUEST: LoginPluginRequest,
+    LOGIN_START: LoginStart,
+    ENCRYPTION_RESPONSE: EncryptionResponse,
+    LOGIN_PLUGIN_RESPONSE: LoginPluginResponse,
+    LOGIN_ACKNOWLEDGED: LoginAcknowleged,
 
     pub fn print(self: Packet, comptime level: std.log.Level) void {
         std.log.debug("Print packet", .{});
@@ -87,10 +101,14 @@ fn readStatusPacket(connection: *net.Connection, packet_id: i32, allocator: std.
 }
 
 fn readLoginPacket(connection: *net.Connection, packet_id: i32, allocator: std.mem.Allocator) !Packet {
-    _ = allocator;
-    _ = packet_id;
-    _ = connection;
-    unreachable;
+    return switch (packet_id) {
+        0x00 => Packet{ .LOGIN_START = .{
+            .name = connection.readString(16, allocator),
+            .uuid = connection.readUUID(allocator),
+        } },
+        0x01 => Packet{ .ENCRYPTION_RESPONSE = .{} },
+        else => error.InvalidPacketId,
+    };
 }
 
 fn readPlayPacket(connection: *net.Connection, packet_id: i32, allocator: std.mem.Allocator) !Packet {
@@ -108,7 +126,7 @@ pub fn writePacket(connection: *net.Connection, packet: Packet) !void {
         .STATUS_RESPONSE => {
             try connection.writeVarInt(0x00);
 
-            const string = try std.json.stringifyAlloc(connection.allocator, packet.STATUS_RESPONSE.data, .{});
+            const string = try std.json.stringifyAlloc(connection.allocator, packet.STATUS_RESPONSE.data, .{ .emit_null_optional_fields = false });
             defer connection.allocator.free(string);
 
             std.debug.print("{s}\n", .{string});
@@ -187,7 +205,7 @@ pub const Handshake = struct {
     };
 
     protocol_version: usize,
-    server_address: [255]u8,
+    server_address: []const u8,
     server_port: u16,
     next_state: NextState,
 };
@@ -240,5 +258,63 @@ const PingRequest_Status = struct {
 
 // LOGIN
 // CLIENTBOUND
+
+const Disconnect_Login = struct {
+    reason: chat.Chat,
+};
+
+const EncryptionRequest = struct {
+    server_id: []const u8,
+    public_key_len: i32,
+    publib_key: []const u8,
+    verify_token_len: i32,
+    verify_token: []const u8,
+};
+
+const LoginSuccess = struct {
+    const Property = struct {
+        name: []const u8,
+        value: []const u8,
+        is_signed: bool,
+        signature: ?[]const u8,
+    };
+
+    uuid: uuid,
+    username: []const u8,
+    number_of_properties: i32,
+    properties: []const Property,
+};
+
+const SetCompression = struct {
+    threshold: i32,
+};
+
+const LoginPluginRequest = struct {
+    message_id: i32,
+    channel: identifier.Identifier,
+    data: []const u8,
+};
+
+// SERVERBOUND
+
+const LoginStart = struct {
+    name: []const u8,
+    uuid: uuid.UUID,
+};
+
+const EncryptionResponse = struct {
+    shared_secret_length: i32,
+    shared_secret: []const u8,
+    verify_token_length: i32,
+    verify_token: []const u8,
+};
+
+const LoginPluginResponse = struct {
+    message_id: i32,
+    successful: bool,
+    data: []const u8,
+};
+
+const LoginAcknowleged = struct {};
 
 // PLAY
