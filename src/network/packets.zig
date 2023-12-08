@@ -17,6 +17,15 @@ pub const PacketType = enum {
     PING_RESPONSE_STATUS,
     STATUS_REQUEST,
     PING_REQUEST_STATUS,
+    DISCONNECT_LOGIN,
+    ENCRYPTION_REQUEST,
+    LOGIN_SUCCESS,
+    SET_COMPRESSION,
+    LOGIN_PLUGIN_REQUEST,
+    LOGIN_START,
+    ENCRYPTION_RESPONSE,
+    LOGIN_PLUGIN_RESPONSE,
+    LOGIN_ACKNOWLEDGED,
 };
 
 pub const Packet = union(PacketType) {
@@ -103,10 +112,9 @@ fn readStatusPacket(connection: *net.Connection, packet_id: i32, allocator: std.
 fn readLoginPacket(connection: *net.Connection, packet_id: i32, allocator: std.mem.Allocator) !Packet {
     return switch (packet_id) {
         0x00 => Packet{ .LOGIN_START = .{
-            .name = connection.readString(16, allocator),
-            .uuid = connection.readUUID(allocator),
+            .name = try connection.readString(16, allocator),
+            .uuid = try connection.readUUID(allocator),
         } },
-        0x01 => Packet{ .ENCRYPTION_RESPONSE = .{} },
         else => error.InvalidPacketId,
     };
 }
@@ -299,7 +307,7 @@ const LoginPluginRequest = struct {
 
 const LoginStart = struct {
     name: []const u8,
-    uuid: uuid.UUID,
+    uuid: uuid,
 };
 
 const EncryptionResponse = struct {

@@ -428,7 +428,7 @@ pub const Connection = struct {
         const upper: u64 = @bitCast(try self.readLong(allocator));
         const lower: u64 = @bitCast(try self.readLong(allocator));
         const combined: u128 = @as(u128, upper) << 64 | lower;
-        return try uuid.fromInt(combined);
+        return uuid.fromInt(combined);
     }
 
     pub inline fn writeUUID(self: *const Connection, value: uuid) !void {

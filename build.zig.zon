@@ -11,5 +11,9 @@
 			.url = "https://github.com/jdknezek/uuid6-zig/archive/f849a3da0b8dc5dfc9a5740ba34f419d30909093.tar.gz",
 			.hash = "1220d16adaadf91606ff25564b176625afb15feb6c6ba2e54ab16a5ab2c17a5d3215",
 		},
+		.openssl = .{
+			.url = "https://github.com/kassane/openssl-zig/archive/9609ba1af6cdd5119323f2b6e5fbe6a653c25705.tar.gz",
+			.hash = "12201093cc0475db3fb6277273003c5e043ae50b2355f63a1119034931dd72372ac3",
+		},
 	}
 }

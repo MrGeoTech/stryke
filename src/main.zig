@@ -1,5 +1,6 @@
 const std = @import("std");
 const network = @import("network/network.zig");
+const encryption = @import("crypto/encryption.zig");
 
 pub const std_options = struct {
     pub const log_level = .debug;
@@ -41,4 +42,5 @@ pub fn log(
 
 test "run all tests" {
     std.testing.refAllDecls(network);
+    std.testing.refAllDecls(encryption);
 }
