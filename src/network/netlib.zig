@@ -8,6 +8,7 @@ const uuid = @import("uuid");
 const packets = @import("packets.zig");
 const chat = @import("../chat/chat.zig");
 const identifier = @import("../data/indentifier.zig");
+const crypto = @import("../crypto/crypto.zig");
 
 const nativeToBig = std.mem.nativeToBig;
 const bigToNative = std.mem.bigToNative;
@@ -22,7 +23,7 @@ pub const Connection = struct {
     allocator: std.mem.Allocator,
     state: packets.ConnectionState,
     buffer: std.RingBuffer,
-    encrypted: bool = false,
+    cipher: ?crypto.CFB8Cipher,
     compressed: bool = false,
 
     pub fn init(handle: os.socket_t, allocator: std.mem.Allocator, state: packets.ConnectionState) !Connection {

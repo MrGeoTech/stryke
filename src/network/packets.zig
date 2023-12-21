@@ -44,7 +44,7 @@ pub const Packet = union(PacketType) {
     LOGIN_START: LoginStart,
     ENCRYPTION_RESPONSE: EncryptionResponse,
     LOGIN_PLUGIN_RESPONSE: LoginPluginResponse,
-    LOGIN_ACKNOWLEDGED: LoginAcknowleged,
+    LOGIN_ACKNOWLEDGED: LoginAcknowledged,
 
     pub fn print(self: Packet, comptime level: std.log.Level) void {
         std.log.debug("Print packet", .{});
@@ -115,6 +115,7 @@ fn readLoginPacket(connection: *net.Connection, packet_id: i32, allocator: std.m
             .name = try connection.readString(16, allocator),
             .uuid = try connection.readUUID(allocator),
         } },
+        0x01 => Packet{ .ENCRYPTION_RESPONSE = .{} },
         else => error.InvalidPacketId,
     };
 }
@@ -323,6 +324,6 @@ const LoginPluginResponse = struct {
     data: []const u8,
 };
 
-const LoginAcknowleged = struct {};
+const LoginAcknowledged = struct {};
 
 // PLAY
