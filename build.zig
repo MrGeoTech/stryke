@@ -13,7 +13,9 @@ pub fn build(b: *std.Build) void {
 
     exe.addModule("uuid", b.dependency("uuid", .{}).module("uuid6"));
     exe.linkLibC();
+    exe.linkLibCpp();
     exe.linkSystemLibrary("libcrypto");
+    exe.linkSystemLibrary("cryptopp");
 
     b.installArtifact(exe);
 

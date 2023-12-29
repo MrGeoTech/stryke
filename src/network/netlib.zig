@@ -23,7 +23,7 @@ pub const Connection = struct {
     allocator: std.mem.Allocator,
     state: packets.ConnectionState,
     buffer: std.RingBuffer,
-    cipher: ?crypto.CFB8Cipher,
+    cipher: ?crypto.CFB8Cipher = null,
     compressed: bool = false,
 
     pub fn init(handle: os.socket_t, allocator: std.mem.Allocator, state: packets.ConnectionState) !Connection {
