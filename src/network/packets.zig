@@ -3,6 +3,13 @@ const uuid = @import("uuid");
 const chat = @import("../chat/chat.zig");
 const identifier = @import("../data/indentifier.zig");
 const net = @import("./netlib.zig");
+const crypto = @import("../crypto/crypto.zig");
+const mojang = @import("mojang.zig");
+const player = @import("../player/player.zig");
+const openssl = @cImport({
+    @cInclude("openssl/ssl.h");
+    @cInclude("openssl/sha.h");
+});
 
 pub const ConnectionState = enum(usize) {
     HANDSHAKE = 0,
@@ -115,7 +122,10 @@ fn readLoginPacket(connection: *net.Connection, packet_id: i32, allocator: std.m
             .name = try connection.readString(16, allocator),
             .uuid = try connection.readUUID(allocator),
         } },
-        0x01 => Packet{ .ENCRYPTION_RESPONSE = .{} },
+        0x01 => Packet{ .ENCRYPTION_RESPONSE = .{
+            .shared_secret = try connection.readArray(@intCast(try connection.readVarInt(allocator)), u8, allocator),
+            .verify_token = try connection.readArray(@intCast(try connection.readVarInt(allocator)), u8, allocator),
+        } },
         else => error.InvalidPacketId,
     };
 }
@@ -146,6 +156,15 @@ pub fn writePacket(connection: *net.Connection, packet: Packet) !void {
         .PING_RESPONSE_STATUS => {
             try connection.writeVarInt(0x01);
             try connection.writeLong(0);
+            try connection.flush();
+        },
+        .ENCRYPTION_REQUEST => {
+            try connection.writeVarInt(0x01);
+            try connection.writeString(packet.ENCRYPTION_REQUEST.server_id, 20);
+            try connection.writeVarInt(@intCast(packet.ENCRYPTION_REQUEST.public_key.len));
+            try connection.writeArray(packet.ENCRYPTION_REQUEST.public_key);
+            try connection.writeVarInt(@intCast(packet.ENCRYPTION_REQUEST.verify_token.len));
+            try connection.writeArray(packet.ENCRYPTION_REQUEST.verify_token);
             try connection.flush();
         },
         else => @panic("Unimplemented!"),
@@ -191,6 +210,53 @@ pub fn handlePacket(self: *net.Connection, packet: Packet) !bool {
 
             try writePacket(self, response);
             return true;
+        },
+        .LOGIN_START => {
+            const login_packet = packet.LOGIN_START;
+
+            self.player = try player.Player.init(self.allocator, login_packet.name, null, login_packet.uuid);
+
+            const response = Packet{ .ENCRYPTION_REQUEST = .{
+                .server_id = "",
+                .public_key = &self.server.rsa.public,
+                .verify_token = std.mem.asBytes(&self.verify_token),
+            } };
+
+            try writePacket(self, response);
+        },
+        .ENCRYPTION_RESPONSE => {
+            const enc_res = packet.ENCRYPTION_RESPONSE;
+
+            if (enc_res.verify_token.len > 162 or enc_res.shared_secret.len > 162)
+                return error.EncryptionResponseTooLong;
+
+            // Shared Secret
+            var shared_secret: [162]u8 = undefined;
+            var secret_length = try self.server.rsa.decrypt(&shared_secret, enc_res.shared_secret);
+            if (secret_length != 16) return error.InvalidSecretLength;
+            // Verify Token
+            var verify_token: [162]u8 = undefined;
+            var verify_length = try self.server.rsa.decrypt(&verify_token, enc_res.verify_token);
+            if (verify_length != 4) return error.InvalidVerifyLength;
+
+            var verify_token_int: u32 = std.mem.bytesAsValue(u32, verify_token[0..4]).*;
+            if (verify_token_int != self.verify_token) return error.MismatchingVerifyToken;
+
+            self.cipher = try crypto.CFB8Cipher.init(shared_secret[0..16].*);
+
+            // Mojang authentication
+            var public_key: [162]u8 = undefined;
+            @memcpy(public_key[0..], self.server.rsa.public[0..]);
+            var hash: [20]u8 = undefined;
+            var context: openssl.SHA_CTX = undefined;
+
+            _ = openssl.SHA1_Init(&context);
+            _ = openssl.SHA1_Update(&context, &shared_secret, shared_secret.len);
+            _ = openssl.SHA1_Update(&context, &public_key, public_key.len);
+            _ = openssl.SHA1_Final(&hash, &context);
+
+            var hash_hex = try crypto.hexdigest(hash);
+            _ = try mojang.auth(self.allocator, self.player.?.name, hash_hex, null);
         },
         else => @panic("Not implemented!"),
     }
@@ -274,9 +340,7 @@ const Disconnect_Login = struct {
 
 const EncryptionRequest = struct {
     server_id: []const u8,
-    public_key_len: i32,
-    publib_key: []const u8,
-    verify_token_len: i32,
+    public_key: []const u8,
     verify_token: []const u8,
 };
 
@@ -312,9 +376,7 @@ const LoginStart = struct {
 };
 
 const EncryptionResponse = struct {
-    shared_secret_length: i32,
     shared_secret: []const u8,
-    verify_token_length: i32,
     verify_token: []const u8,
 };
 

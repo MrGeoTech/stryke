@@ -5,6 +5,7 @@ const netlib = @import("netlib.zig");
 const builtin = @import("builtin");
 const network = @import("network");
 const packets = @import("./packets.zig");
+const crypto = @import("../crypto/crypto.zig");
 
 const StreamServer = netlib.StreamServer;
 const Connection = netlib.Connection;
@@ -18,13 +19,15 @@ pub const Server = struct {
     stream: StreamServer,
     connections: std.ArrayList(Connection),
     connection_mutex: std.Thread.Mutex,
+    rsa: crypto.RSAKeyPair,
 
-    pub fn init(allocator: std.mem.Allocator) Server {
+    pub fn init(allocator: std.mem.Allocator) !Server {
         std.log.debug("Creating new sever!", .{});
         return Server{
             .stream = StreamServer.init(.{ .reuse_address = true, .force_nonblocking = true }),
             .connections = std.ArrayList(Connection).init(allocator),
             .connection_mutex = std.Thread.Mutex{},
+            .rsa = try crypto.RSAKeyPair.generate(),
         };
     }
 
@@ -48,11 +51,11 @@ pub const Server = struct {
     fn acceptNewConnections(self: *Server) !void {
         std.log.debug("Trying to accept new connections...", .{});
         while (true) {
-            var new_connection = self.stream.accept(self.connections.allocator) catch |err| switch (err) {
+            var new_connection = self.stream.accept(self.connections.allocator, self) catch |err| switch (err) {
                 error.WouldBlock => break,
                 else => return err,
             };
-            std.log.debug("New connection accpeted!", .{});
+            std.log.debug("New connection accepted!", .{});
 
             self.connection_mutex.lock();
             try self.connections.append(new_connection.stream);

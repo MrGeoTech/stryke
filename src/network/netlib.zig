@@ -5,10 +5,12 @@ const net = std.net;
 const builtin = @import("builtin");
 const uuid = @import("uuid");
 
+const network = @import("network.zig");
 const packets = @import("packets.zig");
 const chat = @import("../chat/chat.zig");
 const identifier = @import("../data/indentifier.zig");
 const crypto = @import("../crypto/crypto.zig");
+const player = @import("../player/player.zig");
 
 const nativeToBig = std.mem.nativeToBig;
 const bigToNative = std.mem.bigToNative;
@@ -20,18 +22,23 @@ pub const Connection = struct {
     // Note that on some platforms this may not be interchangeable with a
     // regular files descriptor.
     handle: os.socket_t,
+    server: *network.Server,
     allocator: std.mem.Allocator,
     state: packets.ConnectionState,
     buffer: std.RingBuffer,
+    verify_token: u32,
     cipher: ?crypto.CFB8Cipher = null,
+    player: ?player.Player = null,
     compressed: bool = false,
 
-    pub fn init(handle: os.socket_t, allocator: std.mem.Allocator, state: packets.ConnectionState) !Connection {
+    pub fn init(handle: os.socket_t, allocator: std.mem.Allocator, state: packets.ConnectionState, server: *network.Server) !Connection {
         return Connection{
             .handle = handle,
+            .server = server,
             .allocator = allocator,
             .state = state,
             .buffer = try std.RingBuffer.init(allocator, MAX_PACKET_SIZE),
+            .verify_token = std.crypto.random.int(u32),
         };
     }
 
@@ -440,12 +447,12 @@ pub const Connection = struct {
         try self.writeLong(lower);
     }
 
-    pub inline fn readArray(self: *const Connection, byte_size: usize, comptime T: type, allocator: std.mem.Allocator) !T {
-        return std.mem.bytesToValue([]T, (try self.readBytes(byte_size, allocator))[0..byte_size]);
+    pub inline fn readArray(self: *const Connection, byte_size: usize, comptime T: type, allocator: std.mem.Allocator) ![]const T {
+        return std.mem.bytesAsSlice(T, (try self.readBytes(byte_size, allocator))[0..byte_size]);
     }
 
     pub inline fn writeArray(self: *const Connection, array: anytype) !void {
-        try self.writeBytes(&std.mem.toBytes(array));
+        try self.writeBytes(std.mem.sliceAsBytes(array));
     }
 
     pub inline fn readEnum() void {
@@ -591,7 +598,7 @@ pub const StreamServer = struct {
     };
 
     /// If this function succeeds, the returned `NewConnection` is a caller-managed resource.
-    pub fn accept(self: *StreamServer, allocator: std.mem.Allocator) !NewConnection {
+    pub fn accept(self: *StreamServer, allocator: std.mem.Allocator, server: *network.Server) !NewConnection {
         var accepted_addr: net.Address = undefined;
         var adr_len: os.socklen_t = @sizeOf(net.Address);
         const accept_result = blk: {
@@ -605,7 +612,7 @@ pub const StreamServer = struct {
 
         if (accept_result) |fd| {
             return NewConnection{
-                .stream = try Connection.init(fd, allocator, .HANDSHAKE),
+                .stream = try Connection.init(fd, allocator, .HANDSHAKE, server),
                 .address = accepted_addr,
             };
         } else |err| {

@@ -13,9 +13,8 @@ pub fn build(b: *std.Build) void {
 
     exe.addModule("uuid", b.dependency("uuid", .{}).module("uuid6"));
     exe.linkLibC();
-    exe.linkLibCpp();
     exe.linkSystemLibrary("libcrypto");
-    exe.linkSystemLibrary("cryptopp");
+    exe.linkSystemLibrary("libssl");
 
     b.installArtifact(exe);
 
@@ -39,6 +38,7 @@ pub fn build(b: *std.Build) void {
     unit_tests.addModule("uuid", b.dependency("uuid", .{}).module("uuid6"));
     unit_tests.linkLibC();
     unit_tests.linkSystemLibrary("libcrypto");
+    unit_tests.linkSystemLibrary("libssl");
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");

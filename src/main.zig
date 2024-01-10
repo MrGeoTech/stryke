@@ -1,6 +1,7 @@
 const std = @import("std");
 const network = @import("network/network.zig");
 const crypto = @import("crypto/crypto.zig");
+const mojang = @import("network/mojang.zig");
 
 pub const std_options = struct {
     pub const log_level = .debug;
@@ -10,24 +11,20 @@ pub const std_options = struct {
 pub var log_lock = std.Thread.Mutex{};
 
 pub fn main() !void {
-    _ = crypto.RSACipher.init();
-}
+    //const my_logger = std.log.scoped(.my_logger);
 
-//pub fn main() !void {
-//    //const my_logger = std.log.scoped(.my_logger);
-//
-//    var allocator = std.heap.GeneralPurposeAllocator(.{}){};
-//    defer _ = allocator.deinit();
-//
-//    var server = network.Server.init(allocator.allocator());
-//    try server.start(try std.net.Address.parseIp("127.0.0.1", 25565));
-//    defer server.deinit();
-//
-//    while (true) {
-//        try server.tick();
-//        std.time.sleep(1 * std.time.ns_per_s / 2);
-//    }
-//}
+    var allocator = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = allocator.deinit();
+
+    var server = try network.Server.init(allocator.allocator());
+    try server.start(try std.net.Address.parseIp("127.0.0.1", 25565));
+    defer server.deinit();
+
+    while (true) {
+        try server.tick();
+        std.time.sleep(1 * std.time.ns_per_s / 2);
+    }
+}
 
 pub fn log(
     comptime level: std.log.Level,
@@ -47,4 +44,5 @@ pub fn log(
 test "run all tests" {
     std.testing.refAllDecls(network);
     std.testing.refAllDecls(crypto);
+    std.testing.refAllDecls(mojang);
 }
