@@ -2,6 +2,7 @@ const std = @import("std");
 const network = @import("network/network.zig");
 const crypto = @import("crypto/crypto.zig");
 const mojang = @import("network/mojang.zig");
+const events = @import("events/events.zig");
 
 pub const std_options = struct {
     pub const log_level = .debug;
@@ -16,8 +17,10 @@ pub fn main() !void {
     var allocator = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = allocator.deinit();
 
-    var server = try network.Server.init(allocator.allocator());
-    try server.start(try std.net.Address.parseIp("127.0.0.1", 25565));
+    const config = @import("config.zig").Config{};
+
+    var server = try network.Server.init(allocator.allocator(), config);
+    try server.start();
     defer server.deinit();
 
     while (true) {
@@ -42,7 +45,6 @@ pub fn log(
 }
 
 test "run all tests" {
-    std.testing.refAllDecls(network);
-    std.testing.refAllDecls(crypto);
-    std.testing.refAllDecls(mojang);
+    std.testing.refAllDeclsRecursive(network);
+    std.testing.refAllDeclsRecursive(events);
 }

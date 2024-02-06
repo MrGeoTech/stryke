@@ -1,12 +1,14 @@
 const std = @import("std");
 const net = std.net;
 const os = std.os;
-const netlib = @import("netlib.zig");
 const builtin = @import("builtin");
-const network = @import("network");
+
+const events = @import("../events/events.zig");
+const netlib = @import("netlib.zig");
 const packets = @import("./packets.zig");
 const crypto = @import("../crypto/crypto.zig");
 
+const Config = @import("../config.zig").Config;
 const StreamServer = netlib.StreamServer;
 const Connection = netlib.Connection;
 
@@ -20,14 +22,16 @@ pub const Server = struct {
     connections: std.ArrayList(Connection),
     connection_mutex: std.Thread.Mutex,
     rsa: crypto.RSAKeyPair,
+    config: Config,
 
-    pub fn init(allocator: std.mem.Allocator) !Server {
+    pub fn init(allocator: std.mem.Allocator, config: Config) !Server {
         std.log.debug("Creating new sever!", .{});
         return Server{
             .stream = StreamServer.init(.{ .reuse_address = true, .force_nonblocking = true }),
             .connections = std.ArrayList(Connection).init(allocator),
             .connection_mutex = std.Thread.Mutex{},
             .rsa = try crypto.RSAKeyPair.generate(),
+            .config = config,
         };
     }
 
@@ -44,8 +48,8 @@ pub const Server = struct {
         self.stream.deinit();
     }
 
-    pub fn start(self: *Server, address: net.Address) !void {
-        try self.stream.listen(address);
+    pub fn start(self: *Server) !void {
+        try self.stream.listen(try std.net.Address.parseIp(self.config.bind_address, self.config.port));
     }
 
     fn acceptNewConnections(self: *Server) !void {
@@ -55,6 +59,18 @@ pub const Server = struct {
                 error.WouldBlock => break,
                 else => return err,
             };
+
+            var event = events.network.ConnectionAcceptEvent{
+                .connection = &new_connection.stream,
+                .canceled = false,
+            };
+            try events.disbatch(events.Event.fromType(&event));
+
+            if (event.canceled) {
+                new_connection.stream.close();
+                continue;
+            }
+
             std.log.debug("New connection accepted!", .{});
 
             self.connection_mutex.lock();

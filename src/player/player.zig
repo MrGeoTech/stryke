@@ -1,5 +1,6 @@
 const std = @import("std");
-const UUID = @import("uuid");
+
+const UUID = @import("../data/uuid.zig").UUID;
 
 pub const Player = struct {
     arena: std.heap.ArenaAllocator,

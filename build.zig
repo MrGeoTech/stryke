@@ -11,7 +11,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    exe.addModule("uuid", b.dependency("uuid", .{}).module("uuid6"));
     exe.linkLibC();
     exe.linkSystemLibrary("libcrypto");
     exe.linkSystemLibrary("libssl");
@@ -35,7 +34,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    unit_tests.addModule("uuid", b.dependency("uuid", .{}).module("uuid6"));
     unit_tests.linkLibC();
     unit_tests.linkSystemLibrary("libcrypto");
     unit_tests.linkSystemLibrary("libssl");

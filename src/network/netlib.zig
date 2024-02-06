@@ -3,7 +3,6 @@ const os = std.os;
 const net = std.net;
 
 const builtin = @import("builtin");
-const uuid = @import("uuid");
 
 const network = @import("network.zig");
 const packets = @import("packets.zig");
@@ -14,6 +13,9 @@ const player = @import("../player/player.zig");
 
 const nativeToBig = std.mem.nativeToBig;
 const bigToNative = std.mem.bigToNative;
+
+const Config = @import("../config.zig").Config;
+const UUID = @import("../data/uuid.zig").UUID;
 
 const MAX_PACKET_SIZE: comptime_int = 2097151;
 
@@ -26,6 +28,7 @@ pub const Connection = struct {
     allocator: std.mem.Allocator,
     state: packets.ConnectionState,
     buffer: std.RingBuffer,
+    config: Config,
     verify_token: u32,
     cipher: ?crypto.CFB8Cipher = null,
     player: ?player.Player = null,
@@ -38,17 +41,33 @@ pub const Connection = struct {
             .allocator = allocator,
             .state = state,
             .buffer = try std.RingBuffer.init(allocator, MAX_PACKET_SIZE),
+            .config = server.config,
             .verify_token = std.crypto.random.int(u32),
         };
-    }
-
-    pub fn close(self: Connection) void {
-        os.closeSocket(self.handle);
     }
 
     pub fn deinit(self: *const Connection) void {
         self.close();
         @constCast(self).buffer.deinit(self.allocator);
+    }
+
+    /// Disconnects the minecraft client gracefully
+    /// Should be called instead of close
+    pub fn disconnect(self: *Connection, reason: ?chat.Chat) !void {
+        switch (self.state) {
+            .PLAY => {},
+            .LOGIN => {
+                const packet = packets.Packet{ .DISCONNECT_LOGIN = .{ .reason = reason orelse chat.Chat{ .text = "Unspecified reason!" } } };
+                packets.writePacket(self, packet);
+            },
+            else => {},
+        }
+        self.close();
+    }
+
+    /// Forcefully closes socket
+    fn close(self: Connection) void {
+        os.closeSocket(self.handle);
     }
 
     pub const ReadError = os.ReadError;
@@ -123,6 +142,7 @@ pub const Connection = struct {
     pub fn flush(self: *Connection) !void {
         std.log.debug("Flushing {d} bytes...", .{self.buffer.len()});
         if (self.buffer.isEmpty()) return;
+        if (self.compressed and self.buffer.len() > self.config.network_compression_threshold) return self.flushCompressed();
         // Adding packet length to the beginning of buffer
         var temp_buffer = try std.RingBuffer.init(self.allocator, 5 + self.buffer.len());
         defer temp_buffer.deinit(self.allocator);
@@ -137,6 +157,45 @@ pub const Connection = struct {
 
         std.log.debug("Flushed!", .{});
         try self.writeAll(data);
+    }
+
+    fn flushCompressed(self: *Connection) !void {
+        // Converting from RingBuffer to a slice
+        var data = try self.allocator.alloc(u8, self.buffer.len());
+        defer self.allocator.free(data);
+
+        var i: usize = 0;
+        while (self.buffer.read()) |byte| {
+            data[i] = byte;
+            i += 1;
+        }
+
+        // Compressing the data
+        var compressed = std.ArrayList(u8).init(self.allocator);
+        defer compressed.deinit();
+        var compression_stream = try std.compress.zlib.compressStream(self.allocator, compressed.writer(), .{});
+        defer compression_stream.deinit();
+
+        _ = try compression_stream.write(data);
+        try compression_stream.finish();
+
+        // Adding varints to front
+        var ring = try std.RingBuffer.init(self.allocator, 10);
+        defer ring.deinit(self.allocator);
+
+        try writeVarIntBuffer(&ring, @intCast(@as(u32, @truncate(data.len))));
+        const packet_length = ring.len() + compressed.items.len;
+        // Reset ring buffer
+        ring.read_index = 0;
+        ring.write_index = 0;
+
+        try writeVarIntBuffer(&ring, @intCast(@as(u32, @truncate(packet_length))));
+        try writeVarIntBuffer(&ring, @intCast(@as(u32, @truncate(data.len))));
+
+        try compressed.insertSlice(0, ring.data[0..ring.len()]);
+
+        std.log.debug("Flushed compressed!", .{});
+        try self.writeAll(compressed.items);
     }
 
     /// TODO in evented I/O mode, this implementation incorrectly uses the event loop's
@@ -432,19 +491,19 @@ pub const Connection = struct {
         @panic("TODO: Identifier not implemented yet");
     }
 
-    pub inline fn readUUID(self: *const Connection, allocator: std.mem.Allocator) !uuid {
+    pub inline fn readUUID(self: *const Connection, allocator: std.mem.Allocator) !UUID {
         const upper: u64 = @bitCast(try self.readLong(allocator));
         const lower: u64 = @bitCast(try self.readLong(allocator));
         const combined: u128 = @as(u128, upper) << 64 | lower;
-        return uuid.fromInt(combined);
+        return UUID{ .bytes = std.mem.asBytes(&combined).* };
     }
 
-    pub inline fn writeUUID(self: *const Connection, value: uuid) !void {
-        const as_int: u128 = try std.mem.bytesToValue(u128, value.bytes);
+    pub inline fn writeUUID(self: *const Connection, value: UUID) !void {
+        const as_int: u128 = std.mem.bytesToValue(u128, &value.bytes);
         const upper: u64 = @truncate(as_int >> 64);
         const lower: u64 = @truncate(as_int);
-        try self.writeLong(upper);
-        try self.writeLong(lower);
+        try self.writeLong(@bitCast(upper));
+        try self.writeLong(@bitCast(lower));
     }
 
     pub inline fn readArray(self: *const Connection, byte_size: usize, comptime T: type, allocator: std.mem.Allocator) ![]const T {

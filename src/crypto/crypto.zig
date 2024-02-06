@@ -111,7 +111,7 @@ pub fn hexdigest(hash_in: [20]u8) ![]u8 {
         for (0..20) |i| {
             hash[i] = ~hash[i];
         }
-        hash[19] += 1;
+        hash[19] +%= 1;
     }
 
     var hex_hash: [42]u8 = undefined;

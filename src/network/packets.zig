@@ -1,15 +1,18 @@
 const std = @import("std");
-const uuid = @import("uuid");
+const openssl = @cImport({
+    @cInclude("openssl/ssl.h");
+    @cInclude("openssl/sha.h");
+});
+
 const chat = @import("../chat/chat.zig");
 const identifier = @import("../data/indentifier.zig");
 const net = @import("./netlib.zig");
 const crypto = @import("../crypto/crypto.zig");
 const mojang = @import("mojang.zig");
 const player = @import("../player/player.zig");
-const openssl = @cImport({
-    @cInclude("openssl/ssl.h");
-    @cInclude("openssl/sha.h");
-});
+const events = @import("../events/events.zig");
+
+const UUID = @import("../data/uuid.zig").UUID;
 
 pub const ConnectionState = enum(usize) {
     HANDSHAKE = 0,
@@ -90,20 +93,30 @@ pub fn readPacket(connection: *net.Connection, allocator: std.mem.Allocator) !Pa
 
     std.log.debug("Packet id: {x}", .{packet_id});
 
-    switch (connection.state) {
-        ConnectionState.HANDSHAKE => {
-            if (packet_id != 0x00) return PacketError.InvalidPacketId;
-            return Packet{ .HANDSHAKE = Handshake{
-                .protocol_version = @intCast(try connection.readVarInt(allocator)),
-                .server_address = try connection.readString(255, allocator),
-                .server_port = try connection.readUShort(allocator),
-                .next_state = try std.meta.intToEnum(Handshake.NextState, try connection.readVarInt(allocator)),
-            } };
-        },
-        ConnectionState.STATUS => return readStatusPacket(connection, packet_id, allocator),
-        ConnectionState.LOGIN => return readLoginPacket(connection, packet_id, allocator),
-        ConnectionState.PLAY => return readPlayPacket(connection, packet_id, allocator),
-    }
+    var packet_out: Packet = try switch (connection.state) {
+        ConnectionState.HANDSHAKE => readHandshakePacket(connection, packet_id, allocator),
+        ConnectionState.STATUS => readStatusPacket(connection, packet_id, allocator),
+        ConnectionState.LOGIN => readLoginPacket(connection, packet_id, allocator),
+        ConnectionState.PLAY => readPlayPacket(connection, packet_id, allocator),
+    };
+
+    var event = events.network.PacketRecieveEvent{
+        .connection = connection,
+        .packet = packet_out,
+    };
+    try events.disbatch(events.Event.fromType(&event));
+
+    return packet_out;
+}
+
+fn readHandshakePacket(connection: *net.Connection, packet_id: i32, allocator: std.mem.Allocator) !Packet {
+    if (packet_id != 0x00) return PacketError.InvalidPacketId;
+    return Packet{ .HANDSHAKE = Handshake{
+        .protocol_version = @intCast(try connection.readVarInt(allocator)),
+        .server_address = try connection.readString(255, allocator),
+        .server_port = try connection.readUShort(allocator),
+        .next_state = try std.meta.intToEnum(Handshake.NextState, try connection.readVarInt(allocator)),
+    } };
 }
 
 fn readStatusPacket(connection: *net.Connection, packet_id: i32, allocator: std.mem.Allocator) !Packet {
@@ -140,7 +153,16 @@ fn readPlayPacket(connection: *net.Connection, packet_id: i32, allocator: std.me
 // WRITING PACKETS
 
 pub fn writePacket(connection: *net.Connection, packet: Packet) !void {
-    std.log.debug("Writing packet...", .{});
+    std.log.debug("Writing {s} packet...", .{@tagName(packet)});
+
+    var event = events.network.PacketSendEvent{
+        .packet = packet,
+        .connection = connection,
+        .canceled = false,
+    };
+    try events.disbatch(events.Event.fromType(&event));
+    if (event.canceled) return;
+
     switch (packet) {
         .STATUS_RESPONSE => {
             try connection.writeVarInt(0x00);
@@ -165,6 +187,28 @@ pub fn writePacket(connection: *net.Connection, packet: Packet) !void {
             try connection.writeArray(packet.ENCRYPTION_REQUEST.public_key);
             try connection.writeVarInt(@intCast(packet.ENCRYPTION_REQUEST.verify_token.len));
             try connection.writeArray(packet.ENCRYPTION_REQUEST.verify_token);
+            try connection.flush();
+        },
+        .LOGIN_SUCCESS => {
+            try connection.writeVarInt(0x02);
+            try connection.writeUUID(packet.LOGIN_SUCCESS.uuid);
+            try connection.writeString(packet.LOGIN_SUCCESS.username, 16);
+            if (packet.LOGIN_SUCCESS.properties) |properties| {
+                try connection.writeVarInt(@bitCast(@as(u32, @truncate(properties.len))));
+                for (properties) |property| {
+                    try connection.writeString(property.name, null);
+                    try connection.writeString(property.value, null);
+                    try connection.writeBool(property.is_signed);
+                    if (property.is_signed) try connection.writeString(property.signature.?, null);
+                }
+            } else {
+                try connection.writeVarInt(0);
+            }
+            try connection.flush();
+        },
+        .SET_COMPRESSION => {
+            try connection.writeVarInt(0x03);
+            try connection.writeVarInt(packet.SET_COMPRESSION.threshold);
             try connection.flush();
         },
         else => @panic("Unimplemented!"),
@@ -216,47 +260,76 @@ pub fn handlePacket(self: *net.Connection, packet: Packet) !bool {
 
             self.player = try player.Player.init(self.allocator, login_packet.name, null, login_packet.uuid);
 
-            const response = Packet{ .ENCRYPTION_REQUEST = .{
-                .server_id = "",
-                .public_key = &self.server.rsa.public,
-                .verify_token = std.mem.asBytes(&self.verify_token),
-            } };
+            if (self.config.online_mode) {
+                @panic("Unimplemented!");
+                //try writePacket(
+                //    self,
+                //    Packet{ .LOGIN_SUCCESS = .{
+                //        .uuid = self.player.?.uuid,
+                //        .username = self.player.?.name,
+                //        .properties = [0]LoginSuccess.Property,
+                //    } },
+                //);
+                //// Compression and login success will be sent after recieving response
+                //return true;
+            }
 
-            try writePacket(self, response);
+            // Set compression threshold
+            if (self.config.network_compression_threshold >= 0) {
+                try writePacket(
+                    self,
+                    Packet{ .SET_COMPRESSION = .{
+                        .threshold = self.config.network_compression_threshold,
+                    } },
+                );
+                self.compressed = true;
+            }
+
+            try writePacket(
+                self,
+                Packet{ .LOGIN_SUCCESS = .{
+                    .uuid = self.player.?.uuid.*,
+                    .username = self.player.?.name,
+                    .properties = null,
+                } },
+            );
         },
         .ENCRYPTION_RESPONSE => {
-            const enc_res = packet.ENCRYPTION_RESPONSE;
+            @panic("Unimplemented!");
+            //const enc_res = packet.ENCRYPTION_RESPONSE;
 
-            if (enc_res.verify_token.len > 162 or enc_res.shared_secret.len > 162)
-                return error.EncryptionResponseTooLong;
+            //if (enc_res.verify_token.len > 162 or enc_res.shared_secret.len > 162)
+            //    return error.EncryptionResponseTooLong;
 
-            // Shared Secret
-            var shared_secret: [162]u8 = undefined;
-            var secret_length = try self.server.rsa.decrypt(&shared_secret, enc_res.shared_secret);
-            if (secret_length != 16) return error.InvalidSecretLength;
-            // Verify Token
-            var verify_token: [162]u8 = undefined;
-            var verify_length = try self.server.rsa.decrypt(&verify_token, enc_res.verify_token);
-            if (verify_length != 4) return error.InvalidVerifyLength;
+            //// Shared Secret
+            //var shared_secret: [162]u8 = undefined;
+            //var secret_length = try self.server.rsa.decrypt(&shared_secret, enc_res.shared_secret);
+            //if (secret_length != 16) return error.InvalidSecretLength;
+            //// Verify Token
+            //var verify_token: [162]u8 = undefined;
+            //var verify_length = try self.server.rsa.decrypt(&verify_token, enc_res.verify_token);
+            //if (verify_length != 4) return error.InvalidVerifyLength;
 
-            var verify_token_int: u32 = std.mem.bytesAsValue(u32, verify_token[0..4]).*;
-            if (verify_token_int != self.verify_token) return error.MismatchingVerifyToken;
+            //var verify_token_int: u32 = std.mem.bytesAsValue(u32, verify_token[0..4]).*;
+            //if (verify_token_int != self.verify_token) return error.MismatchingVerifyToken;
 
-            self.cipher = try crypto.CFB8Cipher.init(shared_secret[0..16].*);
+            //self.cipher = try crypto.CFB8Cipher.init(shared_secret[0..16].*);
 
-            // Mojang authentication
-            var public_key: [162]u8 = undefined;
-            @memcpy(public_key[0..], self.server.rsa.public[0..]);
-            var hash: [20]u8 = undefined;
-            var context: openssl.SHA_CTX = undefined;
+            //// Mojang authentication
+            //var public_key: [162]u8 = undefined;
+            //@memcpy(public_key[0..], self.server.rsa.public[0..]);
+            //var hash: [20]u8 = undefined;
+            //var context: openssl.SHA_CTX = undefined;
 
-            _ = openssl.SHA1_Init(&context);
-            _ = openssl.SHA1_Update(&context, &shared_secret, shared_secret.len);
-            _ = openssl.SHA1_Update(&context, &public_key, public_key.len);
-            _ = openssl.SHA1_Final(&hash, &context);
+            //_ = openssl.SHA1_Init(&context);
+            //_ = openssl.SHA1_Update(&context, &shared_secret, 0);
+            //_ = openssl.SHA1_Update(&context, &shared_secret, shared_secret.len);
+            //_ = openssl.SHA1_Update(&context, &public_key, public_key.len);
+            //_ = openssl.SHA1_Final(&hash, &context);
 
-            var hash_hex = try crypto.hexdigest(hash);
-            _ = try mojang.auth(self.allocator, self.player.?.name, hash_hex, null);
+            //var hash_hex = try crypto.hexdigest(hash);
+            //std.debug.print("{s}\n", .{hash_hex});
+            //_ = try mojang.auth(self.allocator, self.player.?.name, hash_hex, null);
         },
         else => @panic("Not implemented!"),
     }
@@ -264,7 +337,7 @@ pub fn handlePacket(self: *net.Connection, packet: Packet) !bool {
     return false;
 }
 
-// HANDSHAKING
+// --- HANDSHAKING ---
 
 pub const Handshake = struct {
     pub const NextState = enum(usize) {
@@ -285,7 +358,7 @@ pub const Handshake = struct {
     next_state: NextState,
 };
 
-// STATUS
+// --- STATUS ---
 // CLIENTBOUND
 
 pub const StatusResponse = struct {
@@ -304,13 +377,10 @@ pub const StatusResponse = struct {
             online: usize,
             sample: ?[]const Sample,
         };
-        pub const Description = struct {
-            text: []const u8,
-        };
 
         version: Version,
         players: Players,
-        description: Description,
+        description: chat.Chat,
         favicon: ?[]const u8,
         enforces_secure_chat: bool,
         previews_chat: bool,
@@ -331,7 +401,7 @@ const PingRequest_Status = struct {
     payload: i64,
 };
 
-// LOGIN
+// --- LOGIN ---
 // CLIENTBOUND
 
 const Disconnect_Login = struct {
@@ -352,10 +422,9 @@ const LoginSuccess = struct {
         signature: ?[]const u8,
     };
 
-    uuid: uuid,
+    uuid: UUID,
     username: []const u8,
-    number_of_properties: i32,
-    properties: []const Property,
+    properties: ?[]const Property,
 };
 
 const SetCompression = struct {
@@ -372,7 +441,7 @@ const LoginPluginRequest = struct {
 
 const LoginStart = struct {
     name: []const u8,
-    uuid: uuid,
+    uuid: UUID,
 };
 
 const EncryptionResponse = struct {
@@ -388,4 +457,14 @@ const LoginPluginResponse = struct {
 
 const LoginAcknowledged = struct {};
 
-// PLAY
+// --- CONFIGURATION ---
+// Clientbound
+
+const ConfigurationPluginMessage = struct {
+    channel: identifier.Identifier,
+    data: []const u8,
+};
+
+const Disconnect_Configuration = struct {
+    reason: chat.TextContent,
+};
